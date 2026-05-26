@@ -4,6 +4,7 @@ import os
 from discord.ext import commands
 
 DB_PATH = "db/prefix.db"
+DEFAULT_PREFIX = "inf"
 
 
 class Prefix(commands.Cog):
@@ -22,7 +23,13 @@ class Prefix(commands.Cog):
             """)
             await db.commit()
 
-    @commands.command(name="setprefix", aliases=["prefix", "changeprefix"])
+    async def _get_prefix(self, guild_id: int) -> str:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT prefix FROM prefixes WHERE guild_id = ?", (guild_id,)) as cursor:
+                row = await cursor.fetchone()
+        return row[0] if row else DEFAULT_PREFIX
+
+    @commands.command(name="setprefix", aliases=["changeprefix"])
     @commands.has_permissions(administrator=True)
     @commands.cooldown(1, 5, commands.BucketType.guild)
     async def setprefix(self, ctx: commands.Context, new_prefix: str):
@@ -48,25 +55,16 @@ class Prefix(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @commands.command(name="prefix", hidden=True)
+    @commands.command(name="prefix")
     async def check_prefix(self, ctx: commands.Context):
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT prefix FROM prefixes WHERE guild_id = ?", (ctx.guild.id,)) as cursor:
-                row = await cursor.fetchone()
-        prefix = row[0] if row else "!"
+        prefix = await self._get_prefix(ctx.guild.id)
         await ctx.send(embed=discord.Embed(
-            description=f"**Current Prefix:** `{prefix}`\n\nPrefix change karne ke liye: `{prefix}setprefix <new_prefix>`",
+            description=(
+                f"**Current Prefix:** `{prefix}`\n\n"
+                f"Prefix change karne ke liye: `{prefix}setprefix <new_prefix>`"
+            ),
             color=0xFF0000
         ))
-
-
-async def get_prefix(bot, message):
-    if not message.guild:
-        return "!"
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT prefix FROM prefixes WHERE guild_id = ?", (message.guild.id,)) as cursor:
-            row = await cursor.fetchone()
-    return row[0] if row else "!"
 
 
 async def setup(bot):
