@@ -10,6 +10,8 @@ keep_alive()
 
 TOKEN = os.getenv("TOKEN")
 
+DEFAULT_PREFIX = "inf"
+
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
@@ -17,15 +19,15 @@ intents.message_content = True
 
 async def get_prefix(bot, message):
     if not message.guild:
-        return "!"
+        return DEFAULT_PREFIX
     try:
         import aiosqlite
         async with aiosqlite.connect("db/prefix.db") as db:
             async with db.execute("SELECT prefix FROM prefixes WHERE guild_id = ?", (message.guild.id,)) as cursor:
                 row = await cursor.fetchone()
-        return row[0] if row else "!"
+        return row[0] if row else DEFAULT_PREFIX
     except Exception:
-        return "!"
+        return DEFAULT_PREFIX
 
 
 bot = commands.Bot(command_prefix=get_prefix, intents=intents)
@@ -36,6 +38,7 @@ COGS = ["cogs.welcome", "cogs.autonick", "cogs.embed", "cogs.ticket", "cogs.pref
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} ({bot.user.id})")
+    print(f"Default prefix: {DEFAULT_PREFIX}")
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} slash command(s)")
