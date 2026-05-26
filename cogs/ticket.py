@@ -13,17 +13,25 @@ class TicketCloseView(View):
 
     @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="ticket:close")
     async def close_ticket(self, interaction: discord.Interaction, button: Button):
-        if not interaction.user.guild_permissions.manage_channels:
-            await interaction.response.send_message("You don't have permission to close tickets.", ephemeral=True)
+        member = interaction.user
+        has_permission = (
+            member.guild_permissions.manage_channels or
+            member.guild_permissions.administrator
+        )
+        if not has_permission:
+            await interaction.response.send_message(
+                "❌ Only staff members can close tickets.",
+                ephemeral=True
+            )
             return
 
-        await interaction.response.send_message("Closing ticket in 3 seconds...")
+        await interaction.response.send_message(f"🔒 Ticket being closed by {member.mention}. Channel will be deleted in 5 seconds...")
         import asyncio
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
         try:
-            await interaction.channel.delete(reason=f"Ticket closed by {interaction.user}")
+            await interaction.channel.delete(reason=f"Ticket closed by {member}")
         except discord.Forbidden:
-            await interaction.channel.send("I don't have permission to delete this channel.")
+            await interaction.channel.send("❌ I don't have permission to delete this channel.")
 
 
 class TicketOpenView(View):
