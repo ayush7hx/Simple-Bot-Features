@@ -1,7 +1,7 @@
 import os
 import asyncio
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from keep_alive import keep_alive
 
@@ -9,7 +9,6 @@ load_dotenv()
 keep_alive()
 
 TOKEN = os.getenv("TOKEN")
-
 DEFAULT_PREFIX = "inf"
 
 intents = discord.Intents.default()
@@ -40,25 +39,26 @@ bot = commands.Bot(command_prefix=get_prefix, intents=intents)
 COGS = ["cogs.welcome", "cogs.autonick", "cogs.embed", "cogs.ticket", "cogs.prefix", "cogs.help"]
 
 
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user} ({bot.user.id})")
-    print(f"Default prefix: {DEFAULT_PREFIX}")
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash command(s)")
-    except Exception as e:
-        print(f"Failed to sync commands: {e}")
-    rotate_status.start()
-
-
-@discord.ext.tasks.loop(seconds=10)
+@tasks.loop(seconds=10)
 async def rotate_status():
     idx = rotate_status.current_loop % len(ACTIVITIES)
     await bot.change_presence(
         status=discord.Status.dnd,
         activity=ACTIVITIES[idx]
     )
+
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} ({bot.user.id})")
+    print(f"Default prefix: {DEFAULT_PREFIX}")
+    if not rotate_status.is_running():
+        rotate_status.start()
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} slash command(s)")
+    except Exception as e:
+        print(f"Failed to sync commands: {e}")
 
 
 async def main():
