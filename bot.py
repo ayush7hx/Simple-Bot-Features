@@ -14,9 +14,24 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
 
-COGS = ["cogs.welcome", "cogs.autonick", "cogs.embed", "cogs.ticket"]
+async def get_prefix(bot, message):
+    if not message.guild:
+        return "!"
+    try:
+        import aiosqlite
+        async with aiosqlite.connect("db/prefix.db") as db:
+            async with db.execute("SELECT prefix FROM prefixes WHERE guild_id = ?", (message.guild.id,)) as cursor:
+                row = await cursor.fetchone()
+        return row[0] if row else "!"
+    except Exception:
+        return "!"
+
+
+bot = commands.Bot(command_prefix=get_prefix, intents=intents)
+
+COGS = ["cogs.welcome", "cogs.autonick", "cogs.embed", "cogs.ticket", "cogs.prefix"]
+
 
 @bot.event
 async def on_ready():
@@ -27,6 +42,7 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
+
 async def main():
     async with bot:
         for cog in COGS:
@@ -36,6 +52,7 @@ async def main():
             except Exception as e:
                 print(f"Failed to load {cog}: {e}")
         await bot.start(TOKEN)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
