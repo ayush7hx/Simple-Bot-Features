@@ -16,6 +16,11 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
+ACTIVITIES = [
+    discord.Activity(type=discord.ActivityType.playing, name="MADE BY AYUSH7HX"),
+    discord.Activity(type=discord.ActivityType.playing, name="DARK INFINITE ERA"),
+]
+
 
 async def get_prefix(bot, message):
     if not message.guild:
@@ -44,6 +49,16 @@ async def on_ready():
         print(f"Synced {len(synced)} slash command(s)")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
+    rotate_status.start()
+
+
+@discord.ext.tasks.loop(seconds=30)
+async def rotate_status():
+    idx = rotate_status.current_loop % len(ACTIVITIES)
+    await bot.change_presence(
+        status=discord.Status.dnd,
+        activity=ACTIVITIES[idx]
+    )
 
 
 async def main():
