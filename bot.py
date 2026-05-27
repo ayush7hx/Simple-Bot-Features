@@ -36,7 +36,20 @@ async def get_prefix(bot, message):
 
 bot = commands.Bot(command_prefix=get_prefix, intents=intents)
 
-COGS = ["cogs.welcome", "cogs.autonick", "cogs.embed", "cogs.ticket", "cogs.prefix", "cogs.help"]
+COGS = [
+    "cogs.welcome",
+    "cogs.autonick",
+    "cogs.embed",
+    "cogs.ticket",
+    "cogs.prefix",
+    "cogs.moderation",
+    "cogs.automod",
+    "cogs.logging",
+    "cogs.autorole",
+    "cogs.antinuke",
+    "cogs.massdm",
+    "cogs.help",
+]
 
 
 @tasks.loop(seconds=10)
@@ -44,7 +57,7 @@ async def rotate_status():
     idx = rotate_status.current_loop % len(ACTIVITIES)
     await bot.change_presence(
         status=discord.Status.dnd,
-        activity=ACTIVITIES[idx]
+        activity=ACTIVITIES[idx],
     )
 
 
