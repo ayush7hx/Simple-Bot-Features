@@ -9,40 +9,6 @@ import os
 
 DB_PATH = "db/welcome.db"
 
-class VariableButton(Button):
-    def __init__(self, author):
-        super().__init__(label="Variables", style=discord.ButtonStyle.secondary)
-        self.author = author
-
-    async def callback(self, interaction: discord.Interaction):
-        if interaction.user != self.author:
-            await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
-            return
-
-        variables = {
-            "{user}": "Mentions the user (e.g., @UserName).",
-            "{user_avatar}": "The user's avatar URL.",
-            "{user_name}": "The user's username.",
-            "{user_id}": "The user's ID number.",
-            "{user_nick}": "The user's nickname in the server.",
-            "{user_joindate}": "The user's join date in the server.",
-            "{user_createdate}": "The user's account creation date.",
-            "{server_name}": "The server's name.",
-            "{server_id}": "The server's ID number.",
-            "{server_membercount}": "The server's total member count.",
-            "{server_icon}": "The server's icon URL.",
-        }
-
-        embed = discord.Embed(
-            title="Available Placeholders",
-            description="Use these placeholders in your welcome message:",
-            color=discord.Color(0xFF0000),
-        )
-        for var, desc in variables.items():
-            embed.add_field(name=var, value=desc, inline=False)
-        embed.set_footer(text="Add placeholders directly in your welcome message or embed fields.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 class Welcomer(commands.Cog):
     def __init__(self, bot):
@@ -58,8 +24,7 @@ class Welcomer(commands.Cog):
                     welcome_type TEXT,
                     welcome_message TEXT,
                     channel_id INTEGER,
-                    embed_data TEXT,
-                    auto_delete_duration INTEGER
+                    embed_data TEXT
                 )
             """)
             await db.commit()
@@ -80,10 +45,12 @@ class Welcomer(commands.Cog):
         }
 
     def _safe_format(self, text: str, placeholders: dict) -> str:
+        if not text:
+            return ""
         lower_ph = {k.lower(): v for k, v in placeholders.items()}
         def replace_var(match):
             return str(lower_ph.get(match.group(1).lower(), f"{{{match.group(1)}}}"))
-        return re.sub(r"\{(\w+)\}", replace_var, text or "")
+        return re.sub(r"\{(\w+)\}", replace_var, text)
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -98,7 +65,11 @@ class Welcomer(commands.Cog):
             return
 
         welcome_type, welcome_message, channel_id, embed_data = row
-        channel = member.guild.get_channel(channel_id)
+
+        if not channel_id:
+            return
+
+        channel = member.guild.get_channel(int(channel_id))
         if not channel:
             return
 
@@ -106,15 +77,20 @@ class Welcomer(commands.Cog):
 
         if welcome_type == "simple" and welcome_message:
             await channel.send(self._safe_format(welcome_message, ph))
+
         elif welcome_type == "embed" and embed_data:
             try:
                 info = json.loads(embed_data)
-                color_val = info.get("color", 0x2F3136)
+                color_val = info.get("color", 0xFF0000)
                 if isinstance(color_val, str):
-                    color_val = int(color_val.lstrip("#"), 16)
+                    try:
+                        color_val = int(color_val.lstrip("#"), 16)
+                    except Exception:
+                        color_val = 0xFF0000
+
                 embed = discord.Embed(
-                    title=self._safe_format(info.get("title", ""), ph),
-                    description=self._safe_format(info.get("description", ""), ph),
+                    title=self._safe_format(info.get("title", ""), ph) or None,
+                    description=self._safe_format(info.get("description", ""), ph) or None,
                     color=discord.Color(color_val),
                 )
                 if info.get("footer_text"):
@@ -127,386 +103,264 @@ class Welcomer(commands.Cog):
                         name=self._safe_format(info["author_name"], ph),
                         icon_url=self._safe_format(info.get("author_icon", ""), ph) or None,
                     )
-                if info.get("thumbnail"):
-                    embed.set_thumbnail(url=self._safe_format(info["thumbnail"], ph))
-                if info.get("image"):
-                    embed.set_image(url=self._safe_format(info["image"], ph))
+                thumbnail = self._safe_format(info.get("thumbnail", ""), ph)
+                if thumbnail and thumbnail.startswith("http"):
+                    embed.set_thumbnail(url=thumbnail)
+                image = self._safe_format(info.get("image", ""), ph)
+                if image and image.startswith("http"):
+                    embed.set_image(url=image)
+
                 content = self._safe_format(info.get("message", ""), ph) or None
                 await channel.send(content=content, embed=embed)
-            except Exception:
-                pass
-
-    async def _save_welcome_data(self, guild_id, welcome_type, message, embed_data=None):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO welcome (guild_id, welcome_type, welcome_message, embed_data)
-                VALUES (?, ?, ?, ?)
-                """,
-                (guild_id, welcome_type, message, json.dumps(embed_data) if embed_data else None),
-            )
-            await db.commit()
+            except Exception as e:
+                print(f"[Welcome] Embed send error: {e}")
 
     @commands.hybrid_group(invoke_without_command=True, name="greet", help="Welcome message commands.")
     async def greet(self, ctx: commands.Context):
-        if ctx.subcommand_passed is None:
-            await ctx.send_help(ctx.command)
+        await ctx.send_help(ctx.command)
 
     @greet.command(name="setup", help="Set up a welcome message for new members.")
     @commands.has_permissions(administrator=True)
-    @commands.cooldown(1, 6, commands.BucketType.user)
     async def greet_setup(self, ctx):
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT 1 FROM welcome WHERE guild_id = ?", (ctx.guild.id,)) as cursor:
-                row = await cursor.fetchone()
+        def chk(m):
+            return m.author == ctx.author and m.channel == ctx.channel
 
-        if row:
-            embed = discord.Embed(
-                description=f"A welcome message is already set. Use `{ctx.prefix}greet reset` to reconfigure.",
-                color=0xFF0000,
-            )
-            return await ctx.send(embed=embed)
+        # Step 1: Choose type
+        view = View(timeout=60)
+        chosen = {"type": None}
 
-        options_view = View(timeout=60)
-
-        async def btn_callback(interaction: discord.Interaction, choice: str):
-            if interaction.user != ctx.author:
-                await interaction.response.send_message("Only the command author can use this.", ephemeral=True)
-                return
-            await interaction.response.defer()
-            await interaction.message.delete()
-            if choice == "simple":
-                await self.simple_setup(ctx)
-            elif choice == "embed":
-                await self.embed_setup(ctx)
-
-        for label, cid in [("Simple", "simple"), ("Embed", "embed"), ("Cancel", "cancel")]:
-            style = discord.ButtonStyle.success if cid != "cancel" else discord.ButtonStyle.danger
+        for label, cid, style in [
+            ("Simple Text", "simple", discord.ButtonStyle.success),
+            ("Embed", "embed", discord.ButtonStyle.primary),
+            ("Cancel", "cancel", discord.ButtonStyle.danger),
+        ]:
             btn = Button(label=label, style=style, custom_id=cid)
-            if cid == "cancel":
-                async def cancel_cb(interaction, _cid=cid):
+            async def make_cb(c):
+                async def cb(interaction: discord.Interaction):
                     if interaction.user != ctx.author:
                         await interaction.response.send_message("Not yours.", ephemeral=True)
                         return
+                    chosen["type"] = c
+                    view.stop()
                     await interaction.response.defer()
-                    await interaction.message.delete()
-                btn.callback = cancel_cb
-            else:
-                async def make_cb(c):
-                    async def cb(interaction):
-                        await btn_callback(interaction, c)
-                    return cb
-                btn.callback = await make_cb(cid)
-            options_view.add_item(btn)
+                return cb
+            btn.callback = await make_cb(cid)
+            view.add_item(btn)
 
-        embed = discord.Embed(
-            title="Welcome Message Setup",
-            description="Choose the type of welcome message:",
+        type_msg = await ctx.send(embed=discord.Embed(
+            title="Welcome Setup — Step 1",
+            description="Choose welcome message type:",
+            color=0xFF0000,
+        ), view=view)
+
+        await view.wait()
+        await type_msg.delete()
+
+        if chosen["type"] in (None, "cancel"):
+            return await ctx.send("Setup cancelled.", delete_after=5)
+
+        # Step 2: Welcome channel
+        ch_msg = await ctx.send(embed=discord.Embed(
+            description="**Step 2:** Mention the channel where welcome messages should be sent (e.g. `#welcome`):",
+            color=0xFF0000,
+        ))
+        try:
+            msg = await self.bot.wait_for("message", timeout=60, check=chk)
+            if msg.channel_mentions:
+                welcome_channel = msg.channel_mentions[0]
+            else:
+                try:
+                    welcome_channel = ctx.guild.get_channel(int(msg.content.strip()))
+                except Exception:
+                    welcome_channel = None
+            if not welcome_channel:
+                return await ctx.send("❌ Invalid channel. Setup cancelled.")
+        except asyncio.TimeoutError:
+            return await ctx.send("⏰ Timed out.")
+        await ch_msg.delete()
+
+        if chosen["type"] == "simple":
+            await self._simple_setup(ctx, chk, welcome_channel)
+        else:
+            await self._embed_setup(ctx, chk, welcome_channel)
+
+    async def _simple_setup(self, ctx, chk, welcome_channel):
+        vars_embed = discord.Embed(
+            title="Available Placeholders",
+            description=(
+                "`{user}` — Mention\n`{user_name}` — Username\n`{user_id}` — User ID\n"
+                "`{user_avatar}` — Avatar URL\n`{user_joindate}` — Join date\n"
+                "`{server_name}` — Server name\n`{server_membercount}` — Member count"
+            ),
             color=0xFF0000,
         )
-        embed.add_field(name="Simple", value="Plain text message with placeholders.", inline=False)
-        embed.add_field(name="Embed", value="Rich embed with custom title, description, image, etc.", inline=False)
-        await ctx.send(embed=embed, view=options_view)
-
-    async def simple_setup(self, ctx):
-        first = View(timeout=60)
-        first.add_item(VariableButton(ctx.author))
-        preview_msg = await ctx.send("**Simple Welcome Setup**\nType your welcome message:", view=first)
-        message_content = []
-
+        await ctx.send(embed=vars_embed)
+        await ctx.send("**Type your welcome message:**")
         try:
-            msg = await self.bot.wait_for(
-                "message", timeout=120,
-                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
-            )
-            message_content.append(msg.content)
+            msg = await self.bot.wait_for("message", timeout=120, check=chk)
+            message_content = msg.content
         except asyncio.TimeoutError:
-            await ctx.send("Setup timed out.")
-            return
+            return await ctx.send("⏰ Timed out.")
 
-        ph = self._build_placeholders(ctx.author)
-        preview = self._safe_format(message_content[0], ph)
-        setup_view = View(timeout=60)
-        setup_view.add_item(VariableButton(ctx.author))
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO welcome (guild_id, welcome_type, welcome_message, channel_id, embed_data) VALUES (?, ?, ?, ?, ?)",
+                (ctx.guild.id, "simple", message_content, welcome_channel.id, None),
+            )
+            await db.commit()
 
-        async def submit_cb(interaction):
-            if interaction.user != ctx.author:
-                await interaction.response.send_message("Not yours.", ephemeral=True)
-                return
-            await self._save_welcome_data(ctx.guild.id, "simple", message_content[0])
-            await interaction.response.send_message("✅ Welcome message saved!", ephemeral=True)
-            for item in setup_view.children:
-                item.disabled = True
-            await preview_msg.edit(view=setup_view)
+        await ctx.send(embed=discord.Embed(
+            description=f"✅ Simple welcome message saved! Channel: {welcome_channel.mention}",
+            color=0xFF0000,
+        ))
 
-        submit_btn = Button(label="Save", style=discord.ButtonStyle.success)
-        submit_btn.callback = submit_cb
-        setup_view.add_item(submit_btn)
+    async def _embed_setup(self, ctx, chk, welcome_channel):
+        embed_data = {
+            "title": "Welcome to {server_name}!",
+            "description": "Hey {user}, welcome! You are member #{server_membercount}.",
+            "color": 0xFF0000,
+            "footer_text": "{server_name}",
+            "footer_icon": "{server_icon}",
+            "author_name": "",
+            "author_icon": "",
+            "thumbnail": "{user_avatar}",
+            "image": "",
+            "message": "",
+        }
 
-        await preview_msg.edit(content=f"**Preview:** {preview}", view=setup_view)
-
-    async def embed_setup(self, ctx):
-        setup_view = View(timeout=300)
-        embed_data = {k: None for k in ["message", "title", "description", "color", "footer_text", "footer_icon", "author_name", "author_icon", "thumbnail", "image"]}
-        ph = self._build_placeholders(ctx.author)
-
-        def build_preview_embed():
-            color_val = embed_data["color"] if embed_data["color"] else 0x2F3136
+        def build_preview():
+            ph = {
+                "user": ctx.author.mention,
+                "user_avatar": str(ctx.author.display_avatar.url),
+                "user_name": ctx.author.name,
+                "server_name": ctx.guild.name,
+                "server_membercount": str(ctx.guild.member_count),
+                "server_icon": str(ctx.guild.icon.url) if ctx.guild.icon else "",
+            }
+            color_val = embed_data["color"] if isinstance(embed_data["color"], int) else 0xFF0000
             e = discord.Embed(
-                title=self._safe_format(embed_data["title"] or "", ph),
-                description=self._safe_format(embed_data["description"] or "Customize your welcome embed using the menu below.", ph),
+                title=self._safe_format(embed_data.get("title", ""), ph) or None,
+                description=self._safe_format(embed_data.get("description", ""), ph) or None,
                 color=discord.Color(color_val),
             )
-            if embed_data["footer_text"]:
-                e.set_footer(text=self._safe_format(embed_data["footer_text"], ph), icon_url=self._safe_format(embed_data.get("footer_icon") or "", ph) or None)
-            if embed_data["author_name"]:
-                e.set_author(name=self._safe_format(embed_data["author_name"], ph), icon_url=self._safe_format(embed_data.get("author_icon") or "", ph) or None)
-            if embed_data["thumbnail"]:
-                e.set_thumbnail(url=self._safe_format(embed_data["thumbnail"], ph))
-            if embed_data["image"]:
-                e.set_image(url=self._safe_format(embed_data["image"], ph))
+            ft = self._safe_format(embed_data.get("footer_text", ""), ph)
+            if ft:
+                fi = self._safe_format(embed_data.get("footer_icon", ""), ph)
+                e.set_footer(text=ft, icon_url=fi if fi.startswith("http") else None)
+            an = self._safe_format(embed_data.get("author_name", ""), ph)
+            if an:
+                ai = self._safe_format(embed_data.get("author_icon", ""), ph)
+                e.set_author(name=an, icon_url=ai if ai.startswith("http") else None)
+            th = self._safe_format(embed_data.get("thumbnail", ""), ph)
+            if th and th.startswith("http"):
+                e.set_thumbnail(url=th)
+            img = self._safe_format(embed_data.get("image", ""), ph)
+            if img and img.startswith("http"):
+                e.set_image(url=img)
             return e
 
-        preview_msg = await ctx.send(content="**Embed Welcome Setup** — use the menu to edit:", embed=build_preview_embed(), view=setup_view)
+        fields = [
+            ("title", "Title"),
+            ("description", "Description"),
+            ("color", "Color (hex, e.g. FF0000)"),
+            ("footer_text", "Footer Text"),
+            ("footer_icon", "Footer Icon URL or {server_icon}/{user_avatar}"),
+            ("author_name", "Author Name"),
+            ("thumbnail", "Thumbnail URL or {user_avatar}"),
+            ("image", "Banner/Image URL (full width)"),
+            ("message", "Message Content (outside embed)"),
+        ]
 
-        async def handle_select(interaction: discord.Interaction):
-            if interaction.user != ctx.author:
-                await interaction.response.send_message("Not yours.", ephemeral=True)
-                return
-            selected = select_menu.values[0]
-            await interaction.response.defer()
-            await ctx.send(f"Enter value for **{selected.replace('_', ' ').title()}**:")
-            try:
-                reply = await self.bot.wait_for("message", timeout=60, check=lambda m: m.author == ctx.author and m.channel == ctx.channel)
-                val = reply.content
-                if selected == "color":
-                    try:
-                        embed_data["color"] = int(val.lstrip("#"), 16)
-                    except ValueError:
-                        await ctx.send("Invalid hex color.")
-                        return
-                elif selected in ("footer_icon", "author_icon", "thumbnail", "image"):
-                    if not val.startswith("http") and val not in ("{user_avatar}", "{server_icon}"):
-                        await ctx.send("Invalid URL.")
-                        return
-                    embed_data[selected] = val
-                else:
-                    embed_data[selected] = val
-                await preview_msg.edit(embed=build_preview_embed())
-                await interaction.followup.send(f"✅ {selected.replace('_', ' ').title()} updated.", ephemeral=True)
-            except asyncio.TimeoutError:
-                await ctx.send("Timed out.")
-
-        select_menu = Select(
-            placeholder="Choose what to edit",
-            options=[
-                discord.SelectOption(label="Message Content", value="message"),
-                discord.SelectOption(label="Title", value="title"),
-                discord.SelectOption(label="Description", value="description"),
-                discord.SelectOption(label="Color (hex)", value="color"),
-                discord.SelectOption(label="Footer Text", value="footer_text"),
-                discord.SelectOption(label="Footer Icon URL", value="footer_icon"),
-                discord.SelectOption(label="Author Name", value="author_name"),
-                discord.SelectOption(label="Author Icon URL", value="author_icon"),
-                discord.SelectOption(label="Thumbnail URL", value="thumbnail"),
-                discord.SelectOption(label="Image URL", value="image"),
-            ],
+        info_embed = discord.Embed(
+            title="Embed Welcome Setup",
+            description=(
+                "I'll ask you for each field one by one.\n"
+                "Type `skip` to keep the default value.\n\n"
+                "**Placeholders:** `{user}` `{user_name}` `{user_avatar}` `{server_name}` `{server_membercount}` `{server_icon}`"
+            ),
+            color=0xFF0000,
         )
-        select_menu.callback = handle_select
-        setup_view.add_item(select_menu)
-        setup_view.add_item(VariableButton(ctx.author))
+        await ctx.send(embed=info_embed)
 
-        async def submit_cb(interaction):
-            if interaction.user != ctx.author:
-                await interaction.response.send_message("Not yours.", ephemeral=True)
-                return
-            if not embed_data.get("title") and not embed_data.get("description"):
-                await interaction.response.send_message("Please set at least a title or description.", ephemeral=True)
-                return
-            await self._save_welcome_data(ctx.guild.id, "embed", embed_data.get("message") or "", embed_data)
-            await interaction.response.send_message("✅ Embed welcome message saved!", ephemeral=True)
-            for item in setup_view.children:
-                item.disabled = True
-            await preview_msg.edit(view=setup_view)
+        preview_msg = await ctx.send(content="**Live Preview:**", embed=build_preview())
 
-        submit_btn = Button(label="Save", style=discord.ButtonStyle.success)
-        submit_btn.callback = submit_cb
-        setup_view.add_item(submit_btn)
+        for key, label in fields:
+            prompt = await ctx.send(embed=discord.Embed(
+                description=f"**{label}:** Type value or `skip`:",
+                color=0x2F3136,
+            ))
+            try:
+                msg = await self.bot.wait_for("message", timeout=60, check=chk)
+                if msg.content.lower() != "skip":
+                    if key == "color":
+                        try:
+                            embed_data["color"] = int(msg.content.strip().lstrip("#"), 16)
+                        except Exception:
+                            await ctx.send("❌ Invalid hex. Using default red.", delete_after=3)
+                    else:
+                        embed_data[key] = msg.content.strip()
+                await preview_msg.edit(embed=build_preview())
+                await prompt.delete()
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+            except asyncio.TimeoutError:
+                await prompt.delete()
+                break
 
-        async def cancel_cb(interaction):
-            if interaction.user != ctx.author:
-                await interaction.response.send_message("Not yours.", ephemeral=True)
-                return
-            await preview_msg.delete()
-            await interaction.response.send_message("Cancelled.", ephemeral=True)
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO welcome (guild_id, welcome_type, welcome_message, channel_id, embed_data) VALUES (?, ?, ?, ?, ?)",
+                (ctx.guild.id, "embed", None, welcome_channel.id, json.dumps(embed_data)),
+            )
+            await db.commit()
 
-        cancel_btn = Button(label="Cancel", style=discord.ButtonStyle.danger)
-        cancel_btn.callback = cancel_cb
-        setup_view.add_item(cancel_btn)
+        await ctx.send(embed=discord.Embed(
+            description=f"✅ Embed welcome saved! Channel: {welcome_channel.mention}",
+            color=0xFF0000,
+        ))
 
-    @greet.command(name="reset", aliases=["disable"], help="Remove the welcome configuration.")
+    @greet.command(name="channel", help="Change the welcome channel.")
     @commands.has_permissions(administrator=True)
-    @commands.cooldown(1, 6, commands.BucketType.user)
-    async def greet_reset(self, ctx):
+    async def greet_channel(self, ctx, channel: discord.TextChannel):
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT 1 FROM welcome WHERE guild_id = ?", (ctx.guild.id,)) as cursor:
                 row = await cursor.fetchone()
-
-        if not row:
-            return await ctx.send(embed=discord.Embed(description="No welcome message configured.", color=0xFF0000))
-
-        view = View(timeout=30)
-        embed = discord.Embed(title="Are you sure?", description="This will delete all welcome settings for this server.", color=0xFF0000)
-
-        async def yes_cb(interaction):
-            if interaction.user != ctx.author:
-                await interaction.response.send_message("Not yours.", ephemeral=True)
-                return
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("DELETE FROM welcome WHERE guild_id = ?", (ctx.guild.id,))
-                await db.commit()
-            embed.title = "✅ Done"
-            embed.description = "Welcome configuration removed."
-            await interaction.message.edit(embed=embed, view=None)
-
-        async def no_cb(interaction):
-            if interaction.user != ctx.author:
-                await interaction.response.send_message("Not yours.", ephemeral=True)
-                return
-            embed.title = "Cancelled"
-            embed.description = "No changes made."
-            await interaction.message.edit(embed=embed, view=None)
-
-        yes = Button(label="Confirm", style=discord.ButtonStyle.danger)
-        no = Button(label="Cancel", style=discord.ButtonStyle.secondary)
-        yes.callback = yes_cb
-        no.callback = no_cb
-        view.add_item(yes)
-        view.add_item(no)
-        await ctx.send(embed=embed, view=view)
-
-    @greet.command(name="channel", help="Set the channel for welcome messages.")
-    @commands.has_permissions(administrator=True)
-    @commands.cooldown(1, 6, commands.BucketType.user)
-    async def greet_channel(self, ctx):
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT channel_id FROM welcome WHERE guild_id = ?", (ctx.guild.id,)) as cursor:
-                row = await cursor.fetchone()
-
-        if not row:
-            return await ctx.send(embed=discord.Embed(description=f"No welcome message set. Run `{ctx.prefix}greet setup` first.", color=0xFF0000))
-
-        channels = ctx.guild.text_channels
-        chunks = [channels[i:i+25] for i in range(0, len(channels), 25)]
-        current = 0
-
-        def make_view(page):
-            v = View(timeout=60)
-            menu = Select(
-                placeholder="Select welcome channel",
-                options=[discord.SelectOption(label=c.name, value=str(c.id)) for c in chunks[page]],
-            )
-            async def sel_cb(interaction):
-                if interaction.user != ctx.author:
-                    await interaction.response.send_message("Not yours.", ephemeral=True)
-                    return
-                cid = int(menu.values[0])
-                async with aiosqlite.connect(DB_PATH) as db:
-                    await db.execute("UPDATE welcome SET channel_id = ? WHERE guild_id = ?", (cid, ctx.guild.id))
-                    await db.commit()
-                ch = ctx.guild.get_channel(cid)
-                await interaction.response.edit_message(content=f"✅ Welcome channel set to {ch.mention}", view=None, embed=None)
-            menu.callback = sel_cb
-            v.add_item(menu)
-            if page > 0:
-                prev = Button(label="Previous", style=discord.ButtonStyle.secondary)
-                async def prev_cb(interaction):
-                    nonlocal current
-                    current -= 1
-                    await interaction.response.edit_message(view=make_view(current))
-                prev.callback = prev_cb
-                v.add_item(prev)
-            if page < len(chunks) - 1:
-                nxt = Button(label="Next", style=discord.ButtonStyle.secondary)
-                async def nxt_cb(interaction):
-                    nonlocal current
-                    current += 1
-                    await interaction.response.edit_message(view=make_view(current))
-                nxt.callback = nxt_cb
-                v.add_item(nxt)
-            return v
-
-        await ctx.send("Select the channel for welcome messages:", view=make_view(0))
+            if not row:
+                return await ctx.send(embed=discord.Embed(description="No welcome config found. Run `greet setup` first.", color=0xFF0000))
+            await db.execute("UPDATE welcome SET channel_id = ? WHERE guild_id = ?", (channel.id, ctx.guild.id))
+            await db.commit()
+        await ctx.send(embed=discord.Embed(description=f"✅ Welcome channel updated to {channel.mention}!", color=0xFF0000))
 
     @greet.command(name="test", help="Send a test welcome message.")
     @commands.has_permissions(administrator=True)
-    @commands.cooldown(1, 6, commands.BucketType.user)
     async def greet_test(self, ctx):
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT welcome_type, welcome_message, channel_id, embed_data FROM welcome WHERE guild_id = ?",
-                (ctx.guild.id,),
-            ) as cursor:
-                row = await cursor.fetchone()
+        await self.on_member_join(ctx.author)
+        await ctx.send(embed=discord.Embed(description="✅ Test welcome sent!", color=0xFF0000), delete_after=5)
 
-        if not row:
-            return await ctx.send(embed=discord.Embed(description=f"No welcome message set. Run `{ctx.prefix}greet setup` first.", color=0xFF0000))
-
-        welcome_type, welcome_message, channel_id, embed_data = row
-        channel = self.bot.get_channel(channel_id)
-        if not channel:
-            return await ctx.send(embed=discord.Embed(description=f"Channel not found. Run `{ctx.prefix}greet channel` to set one.", color=0xFF0000))
-
-        ph = self._build_placeholders(ctx.author)
-
-        if welcome_type == "simple":
-            await channel.send(self._safe_format(welcome_message, ph))
-        elif welcome_type == "embed" and embed_data:
-            info = json.loads(embed_data)
-            color_val = info.get("color", 0x2F3136)
-            if isinstance(color_val, str):
-                color_val = int(color_val.lstrip("#"), 16)
-            embed = discord.Embed(
-                title=self._safe_format(info.get("title", ""), ph),
-                description=self._safe_format(info.get("description", ""), ph),
-                color=discord.Color(color_val),
-            )
-            if info.get("footer_text"):
-                embed.set_footer(text=self._safe_format(info["footer_text"], ph), icon_url=self._safe_format(info.get("footer_icon", ""), ph) or None)
-            if info.get("author_name"):
-                embed.set_author(name=self._safe_format(info["author_name"], ph), icon_url=self._safe_format(info.get("author_icon", ""), ph) or None)
-            if info.get("thumbnail"):
-                embed.set_thumbnail(url=self._safe_format(info["thumbnail"], ph))
-            if info.get("image"):
-                embed.set_image(url=self._safe_format(info["image"], ph))
-            await channel.send(content=self._safe_format(info.get("message", ""), ph) or None, embed=embed)
-
-        await ctx.send(f"✅ Test welcome message sent to {channel.mention}!")
-
-    @greet.command(name="config", help="Show the current welcome configuration.")
+    @greet.command(name="config", help="View current welcome config.")
     @commands.has_permissions(administrator=True)
-    @commands.cooldown(1, 6, commands.BucketType.user)
     async def greet_config(self, ctx):
         async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT * FROM welcome WHERE guild_id = ?", (ctx.guild.id,)) as cursor:
+            async with db.execute("SELECT welcome_type, channel_id FROM welcome WHERE guild_id = ?", (ctx.guild.id,)) as cursor:
                 row = await cursor.fetchone()
-
         if not row:
-            return await ctx.send(embed=discord.Embed(description="No welcome configuration found.", color=0xFF0000))
-
-        _, welcome_type, welcome_message, channel_id, embed_data, auto_delete = row
-        channel = self.bot.get_channel(channel_id) if channel_id else None
-
-        embed = discord.Embed(title=f"Greet Config — {ctx.guild.name}", color=0xFF0000)
-        embed.add_field(name="Type", value=welcome_type or "None", inline=True)
-        embed.add_field(name="Channel", value=channel.mention if channel else "Not set", inline=True)
-        if welcome_type == "simple":
-            embed.add_field(name="Message", value=welcome_message or "None", inline=False)
-        elif embed_data:
-            info = json.loads(embed_data)
-            summary = "\n".join(f"**{k.replace('_', ' ').title()}:** {v}" for k, v in info.items() if v)
-            embed.add_field(name="Embed Data", value=summary[:1024] or "None", inline=False)
+            return await ctx.send(embed=discord.Embed(description="No welcome config set.", color=0xFF0000))
+        wtype, cid = row
+        channel = ctx.guild.get_channel(cid) if cid else None
+        embed = discord.Embed(title="Welcome Config", color=0xFF0000)
+        embed.add_field(name="Type", value=wtype or "Not set")
+        embed.add_field(name="Channel", value=channel.mention if channel else "Not set")
         await ctx.send(embed=embed)
+
+    @greet.command(name="reset", help="Reset welcome configuration.")
+    @commands.has_permissions(administrator=True)
+    async def greet_reset(self, ctx):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM welcome WHERE guild_id = ?", (ctx.guild.id,))
+            await db.commit()
+        await ctx.send(embed=discord.Embed(description="✅ Welcome config reset.", color=0xFF0000))
 
 
 async def setup(bot):
